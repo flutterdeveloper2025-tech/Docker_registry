@@ -1,0 +1,70 @@
+pipeline {
+    agent any
+
+    environment {
+        DOCKER_HUB = "anas025"                   // Docker Hub username
+        IMAGE_NAME = "for-docker-app"            // Docker Hub repo name
+        IMAGE_TAG  = "dev-${BUILD_NUMBER}"       // Version tag (auto from Jenkins)
+        FULL_IMAGE = "${DOCKER_HUB}/${IMAGE_NAME}:${IMAGE_TAG}"
+        PORT = "8081"                            // DEV container port
+        APP_NAME = "for-docker-app-dev"          // DEV container name
+    }
+
+    stages {
+
+        stage('Checkout') {
+            steps {
+                git branch: 'for_dev',
+                    url: 'https://github.com/flutterdeveloper2025-tech/Docker_registry.git'
+            }
+        }
+
+        stage('Build Docker Image') {
+            steps {
+                sh "docker build -t $FULL_IMAGE ."
+            }
+        }
+
+        stage('Docker Login') {
+            steps {
+                withCredentials([usernamePassword(credentialsId: 'docker_registry_dev',
+                    usernameVariable: 'USER', passwordVariable: 'PASS')]) {
+                    sh "echo $PASS | docker login -u $USER --password-stdin"
+                }
+            }
+        }
+
+        stage('Push Image to Docker Hub') {
+            steps {
+                sh "docker push $FULL_IMAGE"
+            }
+        }
+
+        stage('Deploy on Azure VM') {
+            steps {
+                sh """
+                docker rm -f $APP_NAME || true
+                docker run -d --name $APP_NAME -p $PORT:80 $FULL_IMAGE
+                """
+            }
+        }
+
+        stage('Smoke Test') {
+            steps {
+                sh """
+                STATUS=\$(curl -o /dev/null -s -w "%{http_code}" http://localhost:$PORT)
+                if [ "\$STATUS" != "200" ]; then
+                    echo "❌ DEV App not reachable"
+                    exit 1
+                fi
+                echo "✅ DEV App running successfully"
+                """
+            }
+        }
+    }
+
+    post {
+        success { echo "🎉 DEV deployment successful" }
+        failure { echo "❌ DEV deployment failed" }
+    }
+}
