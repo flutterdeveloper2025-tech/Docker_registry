@@ -1,0 +1,102 @@
+pipeline {
+    agent any
+
+    environment {
+        DOCKER_HUB = "anas025"                   // Docker Hub username
+        IMAGE_NAME = "for-docker-app"            // Docker Hub repo name
+        IMAGE_TAG  = "prod-${BUILD_NUMBER}"      // Version tag (auto from Jenkins)
+        FULL_IMAGE = "${DOCKER_HUB}/${IMAGE_NAME}:${IMAGE_TAG}"
+        BACKUP = "${DOCKER_HUB}/${IMAGE_NAME}:prod-last" // last working image
+        PORT = "8082"                            // PROD container port
+        APP_NAME = "for-docker-app-prod"         // PROD container name
+    }
+
+    stages {
+
+        stage('Checkout') {
+            steps {
+                git branch: 'main',
+                    url: 'https://github.com/flutterdeveloper2025-tech/Docker_registry.git'
+            }
+        }
+
+        stage('Approval for PROD') {
+            steps {
+                input message: 'Deploy to PROD?'
+            }
+        }
+
+        stage('Build Docker Image') {
+            steps {
+                sh """
+                # Backup current PROD image
+                if docker image inspect $APP_NAME >/dev/null 2>&1; then
+                    docker tag $FULL_IMAGE $BACKUP
+                fi
+                docker build -t $FULL_IMAGE .
+                """
+            }
+        }
+
+        stage('Docker Login') {
+            steps {
+                withCredentials([usernamePassword(credentialsId: 'docker_registry_prod',
+                    usernameVariable: 'USER', passwordVariable: 'PASS')]) {
+                    sh "echo \$PASS | docker login -u \$USER --password-stdin"
+                }
+            }
+        }
+
+        stage('Push Image to Docker Hub') {
+            steps {
+                sh "docker push $FULL_IMAGE"
+            }
+        }
+
+        stage('Deploy on Azure VM') {
+            steps {
+                sh """
+                docker rm -f $APP_NAME || true
+                docker run -d --name $APP_NAME -p $PORT:80 $FULL_IMAGE
+                """
+            }
+        }
+
+        stage('Smoke Test') {
+            steps {
+                script {
+                    try {
+                        sh """
+                        STATUS=\$(curl -o /dev/null -s -w "%{http_code}" http://localhost:$PORT)
+                        if [ "\$STATUS" != "200" ]; then
+                            exit 1
+                        fi
+                        """
+                    } catch (err) {
+                        echo "⚠️ Rolling back to last working image"
+                        sh """
+                        docker rm -f $APP_NAME || true
+                        docker run -d --name $APP_NAME -p $PORT:80 $BACKUP
+                        """
+                        error("❌ Deployment failed, rolled back")
+                    }
+                }
+            }
+        }
+    }
+
+    post {
+        success {
+            echo "🎉 PROD deployment successful"
+            mail to: 'flutterdeveloper2025@gmail.com',
+                 subject: "✅ PROD Deployment SUCCESS: ${env.JOB_NAME} #${env.BUILD_NUMBER}",
+                 body: "The PROD deployment completed successfully. Check Jenkins console: ${env.BUILD_URL}"
+        }
+        failure {
+            echo "❌ PROD deployment failed"
+            mail to: 'flutterdeveloper2025@gmail.com',
+                 subject: "❌ PROD Deployment FAILED: ${env.JOB_NAME} #${env.BUILD_NUMBER}",
+                 body: "The PROD deployment failed. Check Jenkins console: ${env.BUILD_URL}"
+        }
+    }
+}
