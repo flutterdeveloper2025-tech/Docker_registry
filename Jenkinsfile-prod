@@ -86,17 +86,18 @@ pipeline {
     }
 
     post {
-        success {
-            echo "🎉 PROD deployment successful"
-            mail to: 'flutterdeveloper2025@gmail.com',
-                 subject: "✅ PROD Deployment SUCCESS: ${env.JOB_NAME} #${env.BUILD_NUMBER}",
-                 body: "The PROD deployment completed successfully. Check Jenkins console: ${env.BUILD_URL}"
-        }
-        failure {
-            echo "❌ PROD deployment failed"
-            mail to: 'flutterdeveloper2025@gmail.com',
-                 subject: "❌ PROD Deployment FAILED: ${env.JOB_NAME} #${env.BUILD_NUMBER}",
-                 body: "The PROD deployment failed. Check Jenkins console: ${env.BUILD_URL}"
-        }
+    success {
+        echo "🎉 PROD deployment successful"
+        mail to: 'flutterdeveloper2025@gmail.com',
+             subject: "✅ PROD Deployment SUCCESS: ${env.JOB_NAME} #${env.BUILD_NUMBER}",
+             body: "The PROD deployment completed successfully.\nCheck Jenkins console: ${env.BUILD_URL}"
     }
+    failure {
+        echo "❌ PROD deployment failed"
+        mail to: 'flutterdeveloper2025@gmail.com',
+             subject: "❌ PROD Deployment FAILED: ${env.JOB_NAME} #${env.BUILD_NUMBER}",
+             body: "The PROD deployment failed.\nCheck Jenkins console: ${env.BUILD_URL}"
+    }
+}
+
 }
