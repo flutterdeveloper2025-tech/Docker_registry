@@ -9,7 +9,6 @@ pipeline {
         LATEST_IMAGE  = "${DOCKER_HUB}/${IMAGE_NAME}:prod-latest"
         BACKUP        = "${DOCKER_HUB}/${IMAGE_NAME}:prod-last" // last working image
         NAMESPACE     = "prod"                       // Kubernetes namespace
-        KUBECONFIG    = "/home/Anas/.kube/config"   // path to kubeconfig on Jenkins agent
     }
 
     stages {
@@ -24,6 +23,18 @@ pipeline {
         stage('Approval for PROD') {
             steps {
                 input message: 'Deploy to PROD?'
+            }
+        }
+
+        stage('Setup Kubeconfig') {
+            steps {
+                withCredentials([file(credentialsId: 'kubernetes_config', variable: 'KUBECONFIG_FILE')]) {
+                    sh """
+                    mkdir -p \$HOME/.kube
+                    cp \$KUBECONFIG_FILE \$HOME/.kube/config
+                    chmod 600 \$HOME/.kube/config
+                    """
+                }
             }
         }
 
@@ -56,7 +67,7 @@ pipeline {
 
         stage('Deploy to Kubernetes PROD') {
             steps {
-                withEnv(["KUBECONFIG=$KUBECONFIG"]) {
+                withEnv(["KUBECONFIG=$HOME/.kube/config"]) {
                     // Update prod deployment file with new image
                     sh "sed -i 's|image:.*|image: $FULL_IMAGE|' k8s/prod-deployment.yaml"
 
@@ -69,7 +80,7 @@ pipeline {
 
         stage('Smoke Test') {
             steps {
-                withEnv(["KUBECONFIG=$KUBECONFIG"]) {
+                withEnv(["KUBECONFIG=$HOME/.kube/config"]) {
                     script {
                         try {
                             sh """

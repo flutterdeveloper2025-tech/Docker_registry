@@ -8,7 +8,6 @@ pipeline {
         FULL_IMAGE   = "${DOCKER_HUB}/${IMAGE_NAME}:${IMAGE_TAG}"
         LATEST_IMAGE = "${DOCKER_HUB}/${IMAGE_NAME}:dev-latest"
         NAMESPACE    = "dev"                       // Kubernetes namespace
-        KUBECONFIG   = "/home/Anas/.kube/config"  // path to kubeconfig on Jenkins agent
     }
 
     stages {
@@ -17,6 +16,18 @@ pipeline {
             steps {
                 git branch: 'for_dev',
                     url: 'https://github.com/flutterdeveloper2025-tech/Docker_registry.git'
+            }
+        }
+
+        stage('Setup Kubeconfig') {
+            steps {
+                withCredentials([file(credentialsId: 'kubernetes_config', variable: 'KUBECONFIG_FILE')]) {
+                    sh """
+                    mkdir -p \$HOME/.kube
+                    cp \$KUBECONFIG_FILE \$HOME/.kube/config
+                    chmod 600 \$HOME/.kube/config
+                    """
+                }
             }
         }
 
@@ -49,7 +60,7 @@ pipeline {
 
         stage('Deploy to Kubernetes DEV') {
             steps {
-                withEnv(["KUBECONFIG=$KUBECONFIG"]) {
+                withEnv(["KUBECONFIG=$HOME/.kube/config"]) {
                     // Update deployment file with new image
                     sh "sed -i 's|image:.*|image: $FULL_IMAGE|' k8s/dev-deployment.yaml"
 
@@ -62,7 +73,7 @@ pipeline {
 
         stage('Smoke Test') {
             steps {
-                withEnv(["KUBECONFIG=$KUBECONFIG"]) {
+                withEnv(["KUBECONFIG=$HOME/.kube/config"]) {
                     sh """
                     EXTERNAL_IP=\$(kubectl get svc mywebsite-service -n $NAMESPACE -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
                     STATUS=\$(curl -o /dev/null -s -w "%{http_code}" http://\$EXTERNAL_IP)
