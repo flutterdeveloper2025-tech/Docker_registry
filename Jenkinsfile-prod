@@ -7,8 +7,8 @@ pipeline {
         IMAGE_TAG  = "prod-${BUILD_NUMBER}"      // Version tag (auto from Jenkins)
         FULL_IMAGE = "${DOCKER_HUB}/${IMAGE_NAME}:${IMAGE_TAG}"
         BACKUP = "${DOCKER_HUB}/${IMAGE_NAME}:prod-last" // last working image
-        PORT = "8082"                            // PROD container port
-        APP_NAME = "for-docker-app-prod"         // PROD container name
+        LATEST_IMAGE  = "${DOCKER_HUB}/${IMAGE_NAME}:prod-latest" // latest stable image
+        NAMESPACE = "prod"                        // Kubernetes namespace
     }
 
     stages {
@@ -28,13 +28,7 @@ pipeline {
 
         stage('Build Docker Image') {
             steps {
-                sh """
-                # Backup current PROD image
-                if docker image inspect $APP_NAME >/dev/null 2>&1; then
-                    docker tag $FULL_IMAGE $BACKUP
-                fi
-                docker build -t $FULL_IMAGE .
-                """
+                sh "docker build -t $FULL_IMAGE ."
             }
         }
 
@@ -42,7 +36,7 @@ pipeline {
             steps {
                 withCredentials([usernamePassword(credentialsId: 'docker_registry_prod',
                     usernameVariable: 'USER', passwordVariable: 'PASS')]) {
-                    sh "echo \$PASS | docker login -u \$USER --password-stdin"
+                    sh "echo $PASS | docker login -u $USER --password-stdin"
                 }
             }
         }
@@ -53,12 +47,14 @@ pipeline {
             }
         }
 
-        stage('Deploy on Azure VM') {
+        stage('Deploy to Kubernetes PROD') {
             steps {
-                sh """
-                docker rm -f $APP_NAME || true
-                docker run -d --name $APP_NAME -p $PORT:80 $FULL_IMAGE
-                """
+                // Update prod deployment file with new image
+                sh "sed -i 's|image:.*|image: $FULL_IMAGE|' k8s/prod-deployment.yaml"
+                
+                // Apply deployment and service
+                sh "kubectl apply -f k8s/prod-deployment.yaml -n $NAMESPACE"
+                sh "kubectl apply -f k8s/prod-service.yaml -n $NAMESPACE"
             }
         }
 
@@ -67,7 +63,8 @@ pipeline {
                 script {
                     try {
                         sh """
-                        STATUS=\$(curl -o /dev/null -s -w "%{http_code}" http://localhost:$PORT)
+                        EXTERNAL_IP=\$(kubectl get svc mywebsite-service -n $NAMESPACE -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+                        STATUS=\$(curl -o /dev/null -s -w "%{http_code}" http://\$EXTERNAL_IP)
                         if [ "\$STATUS" != "200" ]; then
                             exit 1
                         fi
@@ -75,8 +72,7 @@ pipeline {
                     } catch (err) {
                         echo "⚠️ Rolling back to last working image"
                         sh """
-                        docker rm -f $APP_NAME || true
-                        docker run -d --name $APP_NAME -p $PORT:80 $BACKUP
+                        kubectl set image deployment/mywebsite mywebsite=$BACKUP -n $NAMESPACE
                         """
                         error("❌ Deployment failed, rolled back")
                     }
@@ -86,18 +82,17 @@ pipeline {
     }
 
     post {
-    success {
-        echo "🎉 PROD deployment successful"
-        mail to: 'flutterdeveloper2025@gmail.com',
-             subject: "✅ PROD Deployment SUCCESS: ${env.JOB_NAME} #${env.BUILD_NUMBER}",
-             body: "The PROD deployment completed successfully.\nCheck Jenkins console: ${env.BUILD_URL}"
+        success {
+            echo "🎉 PROD deployment to Kubernetes successful"
+            mail to: 'flutterdeveloper2025@gmail.com',
+                 subject: "✅ PROD Deployment SUCCESS: ${env.JOB_NAME} #${env.BUILD_NUMBER}",
+                 body: "The PROD deployment completed successfully.\nCheck Jenkins console: ${env.BUILD_URL}"
+        }
+        failure {
+            echo "❌ PROD deployment failed"
+            mail to: 'flutterdeveloper2025@gmail.com',
+                 subject: "❌ PROD Deployment FAILED: ${env.JOB_NAME} #${env.BUILD_NUMBER}",
+                 body: "The PROD deployment failed.\nCheck Jenkins console: ${env.JUILD_URL}"
+        }
     }
-    failure {
-        echo "❌ PROD deployment failed"
-        mail to: 'flutterdeveloper2025@gmail.com',
-             subject: "❌ PROD Deployment FAILED: ${env.JOB_NAME} #${env.BUILD_NUMBER}",
-             body: "The PROD deployment failed.\nCheck Jenkins console: ${env.BUILD_URL}"
-    }
-}
-
 }

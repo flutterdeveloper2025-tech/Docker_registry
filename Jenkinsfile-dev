@@ -6,8 +6,8 @@ pipeline {
         IMAGE_NAME = "for-docker-app"            // Docker Hub repo name
         IMAGE_TAG  = "dev-${BUILD_NUMBER}"       // Version tag (auto from Jenkins)
         FULL_IMAGE = "${DOCKER_HUB}/${IMAGE_NAME}:${IMAGE_TAG}"
-        PORT = "8081"                            // DEV container port
-        APP_NAME = "for-docker-app-dev"          // DEV container name
+        LATEST_IMAGE = "${DOCKER_HUB}/${IMAGE_NAME}:dev-latest"
+        NAMESPACE = "dev"                        // Kubernetes namespace
     }
 
     stages {
@@ -40,31 +40,34 @@ pipeline {
             }
         }
 
-        stage('Deploy on Azure VM') {
+        stage('Deploy to Kubernetes DEV') {
             steps {
-                sh """
-                docker rm -f $APP_NAME || true
-                docker run -d --name $APP_NAME -p $PORT:80 $FULL_IMAGE
-                """
+                // Update dev deployment file with new image
+                sh "sed -i 's|image:.*|image: $FULL_IMAGE|' k8s/dev-deployment.yaml"
+                
+                // Apply deployment and service
+                sh "kubectl apply -f k8s/dev-deployment.yaml -n $NAMESPACE"
+                sh "kubectl apply -f k8s/dev-service.yaml -n $NAMESPACE"
             }
         }
 
         stage('Smoke Test') {
             steps {
                 sh """
-                STATUS=\$(curl -o /dev/null -s -w "%{http_code}" http://localhost:$PORT)
+                EXTERNAL_IP=\$(kubectl get svc mywebsite-service -n $NAMESPACE -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+                STATUS=\$(curl -o /dev/null -s -w "%{http_code}" http://\$EXTERNAL_IP)
                 if [ "\$STATUS" != "200" ]; then
-                    echo "❌ DEV App not reachable"
+                    echo "❌ DEV App not reachable at \$EXTERNAL_IP"
                     exit 1
                 fi
-                echo "✅ DEV App running successfully"
+                echo "✅ DEV App running successfully at \$EXTERNAL_IP"
                 """
             }
         }
     }
 
     post {
-        success { echo "🎉 DEV deployment successful" }
+        success { echo "🎉 DEV deployment to Kubernetes successful" }
         failure { echo "❌ DEV deployment failed" }
     }
 }
