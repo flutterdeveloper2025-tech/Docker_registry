@@ -2,13 +2,14 @@ pipeline {
     agent any
 
     environment {
-        DOCKER_HUB = "anas025"                   // Docker Hub username
-        IMAGE_NAME = "for-docker-app"            // Docker Hub repo name
-        IMAGE_TAG  = "prod-${BUILD_NUMBER}"      // Version tag (auto from Jenkins)
-        FULL_IMAGE = "${DOCKER_HUB}/${IMAGE_NAME}:${IMAGE_TAG}"
-        BACKUP = "${DOCKER_HUB}/${IMAGE_NAME}:prod-last" // last working image
-        LATEST_IMAGE  = "${DOCKER_HUB}/${IMAGE_NAME}:prod-latest" // latest stable image
-        NAMESPACE = "prod"                        // Kubernetes namespace
+        DOCKER_HUB    = "anas025"                   // Docker Hub username
+        IMAGE_NAME    = "for-docker-app"            // Docker Hub repo name
+        IMAGE_TAG     = "prod-${BUILD_NUMBER}"      // Version tag (auto from Jenkins)
+        FULL_IMAGE    = "${DOCKER_HUB}/${IMAGE_NAME}:${IMAGE_TAG}"
+        LATEST_IMAGE  = "${DOCKER_HUB}/${IMAGE_NAME}:prod-latest"
+        BACKUP        = "${DOCKER_HUB}/${IMAGE_NAME}:prod-last" // last working image
+        NAMESPACE     = "prod"                       // Kubernetes namespace
+        KUBECONFIG    = "/home/Anas/.kube/config"   // path to kubeconfig on Jenkins agent
     }
 
     stages {
@@ -28,7 +29,10 @@ pipeline {
 
         stage('Build Docker Image') {
             steps {
-                sh "docker build -t $FULL_IMAGE ."
+                sh """
+                docker build -t $FULL_IMAGE .
+                docker tag $FULL_IMAGE $LATEST_IMAGE
+                """
             }
         }
 
@@ -36,45 +40,52 @@ pipeline {
             steps {
                 withCredentials([usernamePassword(credentialsId: 'docker_registry_prod',
                     usernameVariable: 'USER', passwordVariable: 'PASS')]) {
-                    sh "echo $PASS | docker login -u $USER --password-stdin"
+                    sh "echo \$PASS | docker login -u \$USER --password-stdin"
                 }
             }
         }
 
         stage('Push Image to Docker Hub') {
             steps {
-                sh "docker push $FULL_IMAGE"
+                sh """
+                docker push $FULL_IMAGE
+                docker push $LATEST_IMAGE
+                """
             }
         }
 
         stage('Deploy to Kubernetes PROD') {
             steps {
-                // Update prod deployment file with new image
-                sh "sed -i 's|image:.*|image: $FULL_IMAGE|' k8s/prod-deployment.yaml"
-                
-                // Apply deployment and service
-                sh "kubectl apply -f k8s/prod-deployment.yaml -n $NAMESPACE"
-                sh "kubectl apply -f k8s/prod-service.yaml -n $NAMESPACE"
+                withEnv(["KUBECONFIG=$KUBECONFIG"]) {
+                    // Update prod deployment file with new image
+                    sh "sed -i 's|image:.*|image: $FULL_IMAGE|' k8s/prod-deployment.yaml"
+
+                    // Apply deployment and service
+                    sh "kubectl apply -f k8s/prod-deployment.yaml -n $NAMESPACE"
+                    sh "kubectl apply -f k8s/prod-service.yaml -n $NAMESPACE"
+                }
             }
         }
 
         stage('Smoke Test') {
             steps {
-                script {
-                    try {
-                        sh """
-                        EXTERNAL_IP=\$(kubectl get svc mywebsite-service -n $NAMESPACE -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
-                        STATUS=\$(curl -o /dev/null -s -w "%{http_code}" http://\$EXTERNAL_IP)
-                        if [ "\$STATUS" != "200" ]; then
-                            exit 1
-                        fi
-                        """
-                    } catch (err) {
-                        echo "⚠️ Rolling back to last working image"
-                        sh """
-                        kubectl set image deployment/mywebsite mywebsite=$BACKUP -n $NAMESPACE
-                        """
-                        error("❌ Deployment failed, rolled back")
+                withEnv(["KUBECONFIG=$KUBECONFIG"]) {
+                    script {
+                        try {
+                            sh """
+                            EXTERNAL_IP=\$(kubectl get svc mywebsite-service -n $NAMESPACE -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+                            STATUS=\$(curl -o /dev/null -s -w "%{http_code}" http://\$EXTERNAL_IP)
+                            if [ "\$STATUS" != "200" ]; then
+                                exit 1
+                            fi
+                            """
+                        } catch (err) {
+                            echo "⚠️ Rolling back to last working image"
+                            sh """
+                            kubectl set image deployment/mywebsite mywebsite=$BACKUP -n $NAMESPACE
+                            """
+                            error("❌ Deployment failed, rolled back")
+                        }
                     }
                 }
             }
@@ -92,7 +103,7 @@ pipeline {
             echo "❌ PROD deployment failed"
             mail to: 'flutterdeveloper2025@gmail.com',
                  subject: "❌ PROD Deployment FAILED: ${env.JOB_NAME} #${env.BUILD_NUMBER}",
-                 body: "The PROD deployment failed.\nCheck Jenkins console: ${env.JUILD_URL}"
+                 body: "The PROD deployment failed.\nCheck Jenkins console: ${env.BUILD_URL}"
         }
     }
 }
