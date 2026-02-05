@@ -82,21 +82,39 @@ pipeline {
             steps {
                 withEnv(["KUBECONFIG=$HOME/.kube/config"]) {
                     script {
-                        try {
-                            sh """
-                            EXTERNAL_IP=\$(kubectl get svc mywebsite-service -n $NAMESPACE -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
-                            STATUS=\$(curl -o /dev/null -s -w "%{http_code}" http://\$EXTERNAL_IP)
-                            if [ "\$STATUS" != "200" ]; then
-                                exit 1
-                            fi
-                            """
-                        } catch (err) {
-                            echo "⚠️ Rolling back to last working image"
-                            sh """
-                            kubectl set image deployment/mywebsite mywebsite=$BACKUP -n $NAMESPACE
-                            """
+                        def retries = 12     // retry 12 times
+                        def wait = 10        // wait 10 seconds between retries
+                        def externalIP = ""
+                        for (int i = 0; i < retries; i++) {
+                            externalIP = sh(
+                                script: "kubectl get svc mywebsite-service -n $NAMESPACE -o jsonpath='{.status.loadBalancer.ingress[0].ip}'",
+                                returnStdout: true
+                            ).trim()
+                            if (externalIP) {
+                                echo "LoadBalancer IP found: ${externalIP}"
+                                break
+                            }
+                            echo "Waiting for LoadBalancer IP... retry ${i+1}/${retries}"
+                            sleep(wait)
+                        }
+
+                        if (!externalIP) {
+                            echo "⚠️ LoadBalancer IP not assigned, rolling back to last working image"
+                            sh "kubectl set image deployment/mywebsite mywebsite=$BACKUP -n $NAMESPACE"
                             error("❌ Deployment failed, rolled back")
                         }
+
+                        def status = sh(
+                            script: "curl -o /dev/null -s -w '%{http_code}' http://$externalIP",
+                            returnStdout: true
+                        ).trim()
+                        if (status != "200") {
+                            echo "⚠️ App not reachable at $externalIP, rolling back"
+                            sh "kubectl set image deployment/mywebsite mywebsite=$BACKUP -n $NAMESPACE"
+                            error("❌ Deployment failed, rolled back")
+                        }
+
+                        echo "✅ PROD App running successfully at $externalIP"
                     }
                 }
             }
